@@ -1,9 +1,5 @@
 # mrePy
 
-**Description:**
-
-mrePy is a Python script designed to manage .mrpack archives, primarily focusing on creating and extracting modpacks for Minecraft. It provides functionalities to create modpack archives from Minecraft folders, extract and process .mrpack archives, and fetch the latest version of the Fabric Loader from GitHub.
-
 **Installation:**
 
 1. Clone the repository:
