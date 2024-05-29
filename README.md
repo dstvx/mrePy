@@ -48,9 +48,8 @@ python mrePy.py -m <mode> [options]
 
 **Installation from Releases:**
 
-1. Go to the [Releases](https://github.com/your-username/mrePy/releases) page.
+1. Go to the [Releases](https://github.com/dstvx/mrePy/releases/latest) page.
 2. Download the latest release.
-3. Extract the contents of the downloaded zip file.
-4. Run `myscript.exe` from the extracted folder.
+3. Run `myscript.exe`.
 
 **Note:** Ensure that you have the required dependencies installed or included in the same directory as the executable for proper functioning.
