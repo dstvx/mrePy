@@ -252,6 +252,7 @@ def main():
     parser.add_argument('-s', '--summary', type=str, default=DEFAULT_SUMMARY, help="Summary description of the modpack (create mode).")
     parser.add_argument('-mc', '--minecraft-version', type=str, help="Minecraft version for the modpack (create mode).")
     parser.add_argument('-fo', '--force-override', action='store_true', help="Force override without prompting the user (create mode).")
+    parser.add_argument('-sh', '--skip-hash', action='store_true', help="Skip hash verification (get mode).")
 
     args = parser.parse_args()
 
