@@ -75,7 +75,7 @@ def verifyHash(file_path: Path, expected_hashes: dict) -> bool:
 
     return (sha1_hash == expected_hashes['sha1']) and (sha512_hash == expected_hashes['sha512'])
 
-def getArchive(input_file: Path, output_dir: Path) -> None:
+def getArchive(input_file: Path, output_dir: Path, skip_hash: bool) -> None:
     """Extracts and processes a .mrpack archive."""
     if input_file.suffix != ".mrpack":
         raise ValueError(f"Invalid file format: {input_file.name} is not a valid .mrpack file.")
@@ -112,11 +112,11 @@ def getArchive(input_file: Path, output_dir: Path) -> None:
         print(YELLOW.format(f"Downloading: {file_path.name}"))
         downloadFile(url, file_path)
 
-        if verifyHash(file_path, file_info['hashes']):
-            print(GREEN.format(f"Hash verification succeeded for {file_path.name}"))
-        else:
+        if not skip_hash and not verifyHash(file_path, file_info['hashes']):
             file_path.unlink()
             print(BOLD_RED.format(f"Hash verification failed for {file_path.name}"))
+        else:
+            print(GREEN.format(f"Hash verification succeeded for {file_path.name}"))
 
     output_modpack_dir = createOutputFolder(output_dir / input_file.stem)
     try:
@@ -269,8 +269,10 @@ def main():
     elif args.mode == 'get':
         if not args.output:
             args.output = DEFAULT_OUTPUT_FOLDER
-        getArchive(args.input[0], args.output)
+        getArchive(args.input[0], args.output, args.skip_hash)
         print(BOLD_GREEN.format("Modpack retrieved successfully!"))
 
 if __name__ == "__main__":
     main()
+
+# https://github.com/dstvx/mrePy.git
