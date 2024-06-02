@@ -4,7 +4,7 @@
 
 1. Clone the repository:
    ```sh
-   git clone https://github.com/your-username/mrePy.git
+   git clone https://github.com/dstvx/mrePy.git
    ```
 2. Navigate to the project directory:
    ```sh
