@@ -1,28 +1,33 @@
 import argparse
-from pathlib import Path
-from requests import get as _get
-from zipfile import ZipFile
-from shutil import move, rmtree, copytree as _copytree, copy2 as _copy2, make_archive
+import os
+import sys
 from colorama import Fore as F, init
+from pathlib import Path
+from typing import Dict, List, Union, Optional
+from hashlib import sha1, sha512
+from requests import get as _get, exceptions as requestsExceptions
+from json import load, dump
+from shutil import copytree, copy, rmtree, move
+from zipfile import ZipFile
+from concurrent.futures import ThreadPoolExecutor
 from fake_useragent import UserAgent
-from json import load, dump as _dump
-from hashlib import sha1 as _sha1, sha512 as _sha512
-from os import walk as _walk
-from typing import List
 
+# Initialize colorama
 init()
 
 # Constants
 CWD = Path.cwd()
 DEFAULT_OUTPUT_FOLDER = CWD / "Result"
 TMP_FOLDER = CWD / "tmp"
+OVERRIDES_FOLDER = TMP_FOLDER / 'overrides'
 MODRINTH_API_URL = 'https://api.modrinth.com/v2/version_file/{}'
 FABRIC_LOADER_RELEASES_URL = 'https://api.github.com/repos/FabricMC/fabric-loader/releases/latest'
 DEFAULT_VERSION_ID = '1.0.0'
 DEFAULT_NAME = 'Custom Modpack'
 DEFAULT_SUMMARY = 'Automatically generated modpack'
+CHUNK_SIZE = 1024 * 1024
 
-# Colors
+# Color constants
 GREEN = F.LIGHTGREEN_EX + '{}' + F.RESET
 BOLD_GREEN = F.LIGHTGREEN_EX + '\033[1m{}\033[0m' + F.RESET
 RED = F.LIGHTRED_EX + '{}' + F.RESET
@@ -32,248 +37,405 @@ BOLD_YELLOW = F.LIGHTYELLOW_EX + '\033[1m{}\033[0m' + F.RESET
 WHITE = F.LIGHTWHITE_EX + '{}' + F.RESET
 BOLD_WHITE = F.LIGHTWHITE_EX + '\033[1m{}\033[0m' + F.RESET
 
-def unzipArchive(src: Path, dst: Path) -> None:
-    """Unzips the archive from src to dst."""
-    with ZipFile(src, 'r') as f:
-        f.extractall(dst)
 
-def createOutputFolder(output_dir: Path) -> Path:
-    """Creates the output folder if it doesn't exist."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir
+def getUA():
+    return {'User-Agent': UserAgent().random}
 
-def createArchive(input_files: List[Path], output_file: Path) -> None:
-    """Creates a zip archive from the input files."""
-    with ZipFile(output_file, 'w') as archive:
-        for file in input_files:
-            archive.write(file, file.relative_to(TMP_FOLDER))
+def cls():
+    """Clears the console screen."""
+    os.system('cls' if os.name == 'nt' else 'clear')
 
-def downloadFile(url: str, file_path: Path) -> None:
-    """Downloads a file from the given URL to the specified file path."""
-    ua = UserAgent()
-    headers = {'User-Agent': ua.random}
-    response = _get(url, headers=headers, stream=True)
-    with file_path.open('wb') as file:
-        for chunk in response.iter_content(chunk_size=8192):
-            file.write(chunk)
 
-def verifyHash(file_path: Path, expected_hashes: dict) -> bool:
-    """Verifies the file's hash against the expected hashes."""
-    sha1 = _sha1()
-    sha512 = _sha512()
-
-    with file_path.open('rb') as file:
-        while True:
-            data = file.read(65536)
-            if not data:
-                break
-            sha1.update(data)
-            sha512.update(data)
-
-    sha1_hash = sha1.hexdigest()
-    sha512_hash = sha512.hexdigest()
-
-    return (sha1_hash == expected_hashes['sha1']) and (sha512_hash == expected_hashes['sha512'])
-
-def getArchive(input_file: Path, output_dir: Path, skip_hash: bool) -> None:
-    """Extracts and processes a .mrpack archive."""
-    if input_file.suffix != ".mrpack":
-        raise ValueError(f"Invalid file format: {input_file.name} is not a valid .mrpack file.")
-
-    createOutputFolder(TMP_FOLDER)
-    unzipArchive(input_file, TMP_FOLDER)
-
-    with (TMP_FOLDER / "modrinth.index.json").open('r') as file:
-        index_data = load(file)
-
-    print(BOLD_WHITE.format(f"Modpack: {index_data['name']}"))
-    print(WHITE.format(f"Version ID: {index_data['versionId']}"))
-    print(WHITE.format(f"Summary: {index_data['summary']}"))
-    print(WHITE.format(f"Minecraft Version: {index_data['dependencies']['minecraft']}"))
-    print(WHITE.format(f"Fabric Loader Version: {index_data['dependencies']['fabric-loader']}"))
-
-    minecraft_folder = TMP_FOLDER / ".minecraft"
-    minecraft_folder.mkdir(exist_ok=True)
-
-    # Move contents of overrides folder to .minecraft
-    overrides_folder = TMP_FOLDER / "overrides"
-    if overrides_folder.exists():
-        for item in overrides_folder.iterdir():
-            if item.is_dir():
-                _copytree(item, minecraft_folder / item.name, dirs_exist_ok=True)
-            else:
-                _copy2(item, minecraft_folder)
-
-    for file_info in index_data['files']:
-        file_path = minecraft_folder / Path(file_info['path'])
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        url = file_info['downloads'][0]
-        print(YELLOW.format(f"Downloading: {file_path.name}"))
-        downloadFile(url, file_path)
-
-        if not skip_hash and not verifyHash(file_path, file_info['hashes']):
-            file_path.unlink()
-            print(BOLD_RED.format(f"Hash verification failed for {file_path.name}"))
-        else:
-            print(GREEN.format(f"Hash verification succeeded for {file_path.name}"))
-
-    output_modpack_dir = createOutputFolder(output_dir / input_file.stem)
-    try:
-        print('Moving files to', BOLD_YELLOW.format(f'{output_modpack_dir}' + '...'))
-        move(str(minecraft_folder), str(output_modpack_dir))
-    except Exception as e:
-        print(BOLD_RED.format(f"Error: {e}"))
-        print(BOLD_RED.format("The destination folder already exists. Please choose a different output folder or delete the existing one."))
-        return
-
-    print('Removing temporary files...')
-    rmtree(TMP_FOLDER)
-    print(BOLD_GREEN.format('Done!'))
-
-def getLatestLoader() -> str:
+def getLatestLoader() -> Optional[str]:
     """Fetches the latest version of the Fabric Loader from the GitHub API.
-    
+
     Returns:
-        str: The tag name of the latest Fabric Loader release, or None if the request failed.
+        Optional[str]: The tag name of the latest Fabric Loader release, or None if the request failed.
     """
-    response = _get(FABRIC_LOADER_RELEASES_URL)
-    if response.status_code == 200:
-        return response.json()['tag_name']
-    else:
-        print(f"{RED}Failed to fetch Fabric Loader version. Status code: {response.status_code}{F.RESET}")
+    try:
+        response = _get(FABRIC_LOADER_RELEASES_URL, headers=getUA())
+        response.raise_for_status()
+        return response.json().get('tag_name')
+    except requestsExceptions.RequestException as e:
+        print(RED.format(f"Failed to fetch Fabric Loader version: {e}"))
         return None
 
-def getFileHashFromAPI(file_path: Path, algorithm: str) -> str:
-    """Fetches the hash of a file from the Modrinth API."""
-    hash_value = _sha512(file_path.read_bytes()).hexdigest() if algorithm == 'sha512' else _sha1(file_path.read_bytes()).hexdigest()
-    url = MODRINTH_API_URL.format(hash_value)
-    params = {'algorithm': algorithm, 'multiple': True}
-    response = _get(url, params=params)
 
-    if response.status_code == 200:
-        for file_info in response.json().get('files', []):
-            if file_info['filename'] == str(file_path.name):
-                return file_info['hashes'][algorithm]
-    elif response.status_code == 404:
-        raise ValueError(f"File '{file_path}' not found on Modrinth API.")
+def getHashes(fp: Path) -> Dict[str, str]:
+    """Computes the SHA-1 and SHA-512 hashes of a file.
+
+    Args:
+        fp (Path): The file path.
+
+    Returns:
+        Dict[str, str]: A dictionary with the SHA-1 and SHA-512 hashes.
+    """
+    sha1Hash = sha1()
+    sha512Hash = sha512()
+    with fp.open('rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            sha1Hash.update(chunk)
+            sha512Hash.update(chunk)
+    return {'sha1': sha1Hash.hexdigest(), 'sha512': sha512Hash.hexdigest()}
+
+
+def getFiles(folder: Path, child: str) -> List[Path]:
+    """Gets a list of files in a specified subdirectory.
+
+    Args:
+        folder (Path): The parent folder.
+        child (str): The subdirectory name.
+
+    Returns:
+        List[Path]: A list of file paths.
+    """
+    try:
+        return list((folder / child).glob('*'))
+    except Exception as e:
+        print(RED.format(f"Error accessing files in {folder / child}: {e}"))
+        return []
+
+
+def createMrpack(src: Path, dst: Path):
+    """Creates a zip archive (.mrpack) from the specified source folder.
+
+    Args:
+        src (Path): The source folder.
+        dst (Path): The destination file path.
+    """
+    try:
+        with ZipFile(dst, 'w') as archive:
+            for file in src.rglob('*'):
+                archive.write(file, file.relative_to(src))
+        print(GREEN.format(f"Archive created successfully at {dst}"))
+    except Exception as e:
+        print(RED.format(f"Error creating archive {dst}: {e}"))
+
+
+def deleteEmptyFolders(path: Path):
+    """Deletes empty folders in the specified directory.
+
+    Args:
+        path (Path): The parent directory.
+    """
+    for folder in sorted(path.glob('**/*'), key=lambda p: -len(str(p).split('/'))):
+        if folder.is_dir() and not any(folder.iterdir()):
+            try:
+                folder.rmdir()
+                print(YELLOW.format(f"Deleted empty folder: {folder}"))
+            except Exception as e:
+                print(RED.format(f"Error deleting folder {folder}: {e}"))
+
+
+def downloadFile(downloadUrl: str, filePath: Path, expectedHash: str) -> bool:
+    """Downloads a file and verifies its SHA-1 hash.
+    
+    Args:
+        downloadUrl (str): The URL to download the file from.
+        filePath (Path): The path to save the file.
+        expectedHash (str): The expected SHA-1 hash of the file.
+        
+    Returns:
+        bool: True if the file was downloaded and verified successfully, otherwise False.
+    """
+    try:
+        response = _get(downloadUrl, stream=True, headers=getUA())
+        response.raise_for_status()
+
+        with filePath.open('wb') as file:
+            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                file.write(chunk)
+
+        fileHash = sha1(filePath.read_bytes()).hexdigest()
+        if fileHash == expectedHash:
+            print(GREEN.format(f"Downloaded and verified {filePath.name} successfully."))
+            return True
+        else:
+            print(RED.format(f"Hash mismatch for {filePath.name}."))
+            return False
+    except requestsExceptions.RequestException as e:
+        print(RED.format(f"Error downloading {filePath.name}: {e}"))
+        return False
+
+def copyFiles(child: str, add: bool, folder: Path):
+    """Copies files from a source folder to the overrides folder if required.
+    
+    Args:
+        child (str): The subdirectory name.
+        add (bool): Whether to add files from this subdirectory.
+        folder (Path): The source folder.
+    """
+    if add:
+        dest = OVERRIDES_FOLDER / child
+        dest.mkdir(parents=True, exist_ok=True)
+        for i in getFiles(folder=folder, child=child):
+            if i.is_file():
+                copy(i, dest)
+            else:
+                copytree(i, dest / i.name, dirs_exist_ok=True)
+
+
+def copyFilesThreaded(child: str, add: bool, folder: Path):
+    """Copies files from the source folder to the override folder using threads.
+
+    Args:
+        child (str): The subdirectory name.
+        add (bool): Whether to add files from this subdirectory.
+        folder (Path): The source folder.
+    """
+    if add:
+        dest = OVERRIDES_FOLDER / child
+        dest.mkdir(parents=True, exist_ok=True)
+        files = getFiles(folder, child)
+        
+        def copyFile(src: Path):
+            try:
+                if src.is_file():
+                    copy(src, dest)
+                    print(GREEN.format(f"Copied file {src.name} to {dest}"))
+                else:
+                    copytree(src, dest / src.name, dirs_exist_ok=True)
+                    print(GREEN.format(f"Copied directory {src.name} to {dest}"))
+            except Exception as e:
+                print(RED.format(f"Error copying {src.name}: {e}"))
+
+        with ThreadPoolExecutor() as executor:
+            executor.map(copyFile, files)
+
+
+def getFileURL(fp: Path) -> Union[str, None]:
+    """Gets the download URL of a file using its SHA-1 hash.
+
+    Args:
+        fp (Path): The path to the file.
+
+    Returns:
+        Union[str, None]: The download URL of the file, or None if not found.
+    """
+    hashes = getHashes(fp)
+    r = _get(MODRINTH_API_URL.format(hashes['sha1']), headers=getUA())
+    try:
+        if r.status_code != 200:
+            return None
+        return r.json()['files'][0]['url']
+    except:
+        return None
+
+def addFilesThreaded(child: str, add: bool, folder: Path, forced: bool, defaultIndex: Dict) -> None:
+    """Adds files to the default index and copies them to the override folder using threads."""
+    if add:
+        dest = OVERRIDES_FOLDER / child
+        dest.mkdir(parents=True, exist_ok=True)
+
+        files = getFiles(folder, child)
+        overrides = []  # List to store files to be potentially overridden
+        
+        def processFile(i: Path):
+            hashes = getHashes(i)
+            url = getFileURL(i)
+            if not url:
+                overrides.append(i)  # Collect the files to ask for override later
+                return
+            defaultIndex['files'].append({
+                'path': f'{child}/{i.name}',
+                'hashes': hashes,
+                'downloads': [url] if url else [],
+                'filesize': i.stat().st_size
+            })
+            print(GREEN.format(f"Added {i.name} to the index"))
+
+        with ThreadPoolExecutor() as executor:
+            executor.map(processFile, files)
+        
+        # After all threads are done, ask for overrides
+        for i in overrides:
+            override = forced or input(f'Add {i.name} as override? (y/n): ') == 'y'
+            if override:
+                copy(i, dest)
+                print(GREEN.format(f"Added {i.name} as override"))
+
+
+def createArchive(folder: Path, forced: Optional[bool] = None, outputFolder: Optional[Path] = None,
+                  versionId: Optional[str] = None, modpackName: Optional[str] = None,
+                  summary: Optional[str] = None, minecraftVersion: Optional[str] = None,
+                  fabricLoaderVersion: Optional[str] = None):
+    """Creates a modpack archive (.mrpack) from the specified folder.
+
+    Args:
+        folder (Path): The source folder.
+        forced (Optional[bool]): If True, force add files without prompting.
+        outputFolder (Optional[Path]): The output folder for the archive.
+        versionId (Optional[str]): The modpack version ID.
+        modpackName (Optional[str]): The modpack name.
+        summary (Optional[str]): The modpack summary.
+        minecraftVersion (Optional[str]): The Minecraft version.
+        fabricLoaderVersion (Optional[str]): The Fabric loader version.
+    """
+    if forced:
+        addConfig, addMods, addResourcepacks, addShaderpacks = True, True, True, True
     else:
-        raise ValueError(f"Failed to fetch file hash from Modrinth API. Status code: {response.status_code}")
+        addConfig = input('Add config files? (y/n): ').lower() == 'y'
+        addMods = input('Add mods files? (y/n): ').lower() == 'y'
+        addResourcepacks = input('Add resourcepack files? (y/n): ').lower() == 'y'
+        addShaderpacks = input('Add shaderpack files? (y/n): ').lower() == 'y'
 
-    return None
+    TMP_FOLDER.mkdir(exist_ok=True)
+    OVERRIDES_FOLDER.mkdir(exist_ok=True)
 
-def createModpackArchive(minecraft_folder: Path, output_file: Path, version_id: str, modpack_name: str, summary: str,
-                         minecraft_version: str, fabric_loader_version: str, force_override: bool) -> None:
-    """Creates a modpack archive from the specified Minecraft folder."""
-    TMP_FOLDER.mkdir(parents=True, exist_ok=True)
-
-    include_config = force_override or input(YELLOW.format("Include 'config' folder? (y/n) ")).lower() == 'y'
-    include_resourcepacks = force_override or input(YELLOW.format("Include 'resourcepacks' folder? (y/n) ")).lower() == 'y'
-    include_mods = force_override or input(YELLOW.format("Include 'mods' folder? (y/n) ")).lower() == 'y'
-    include_shaderpacks = force_override or input(YELLOW.format("Include 'shaderpacks' folder? (y/n) ")).lower() == 'y'
-
-    allowed_folders = ['config', 'resourcepacks', 'mods', 'shaderpacks']
-    included_folders = [folder for folder in allowed_folders
-                        if (folder == 'config' and include_config) or
-                        (folder == 'resourcepacks' and include_resourcepacks) or
-                        (folder == 'mods' and include_mods) or
-                        (folder == 'shaderpacks' and include_shaderpacks)]
-
-    override_folder = TMP_FOLDER / "overrides"
-    override_folder.mkdir(parents=True, exist_ok=True)
-
-    modrinth_index = {
+    defaultIndex = {
         "formatVersion": 1,
         "game": "minecraft",
-        "versionId": version_id,
-        "name": modpack_name,
-        "summary": summary,
+        "versionId": versionId or DEFAULT_VERSION_ID,
+        "name": modpackName or DEFAULT_NAME,
+        "summary": summary or DEFAULT_SUMMARY,
         "files": [],
         "dependencies": {
-            "minecraft": minecraft_version or None,
-            "fabric-loader": fabric_loader_version or None
+            "minecraft": minecraftVersion or None,
+            "fabric-loader": fabricLoaderVersion or None
         }
     }
 
-    for root, _, files in _walk(minecraft_folder):
-        for file in files:
-            file_path = Path(root) / file
-            rel_path = file_path.relative_to(minecraft_folder)
+    copyFilesThreaded('config', addConfig, folder)
+    addFilesThreaded('mods', addMods, folder, forced, defaultIndex)
+    addFilesThreaded('resourcepacks', addResourcepacks, folder, forced, defaultIndex)
+    addFilesThreaded('shaderpacks', addShaderpacks, folder, forced, defaultIndex)
 
-            if rel_path.parts[0] not in allowed_folders:
-                continue
+    with (TMP_FOLDER / 'modrinth.index.json').open('w') as f:
+        dump(defaultIndex, f, indent=4)
 
-            if rel_path.parts[0] == 'config':
-                print(BOLD_GREEN.format(f"Adding config file '{rel_path}' as override."))
-                override_file_path = override_folder / rel_path
-                override_file_path.parent.mkdir(parents=True, exist_ok=True)
-                _copy2(file_path, override_file_path)
-                continue
-
-            hashes = {
-                'sha1': _sha1(file_path.read_bytes()).hexdigest(),
-                'sha512': _sha512(file_path.read_bytes()).hexdigest()
-            }
-
-            print(YELLOW.format(f"Checking {rel_path} in the API..."))
-            try:
-                hash_from_api = getFileHashFromAPI(file_path, 'sha512')
-                print(GREEN.format(f"File '{rel_path}' found in the API."))
-                modrinth_index['files'].append({
-                    'path': str(rel_path).replace("\\", "/"),
-                    'hashes': hashes,
-                    'downloads': [f"https://cdn.modrinth.com/data/{str(rel_path).replace('\\', '/')}"]
-                })
-            except ValueError as e:
-                print(BOLD_RED.format(str(e)))
-                if force_override or input(YELLOW.format(f"Add '{rel_path}' as override? (y/n) ")).lower() == 'y':
-                    print(BOLD_GREEN.format(f"Adding '{rel_path}' as override."))
-                    override_file_path = override_folder / rel_path
-                    override_file_path.parent.mkdir(parents=True, exist_ok=True)
-                    _copy2(file_path, override_file_path)
-                else:
-                    continue
-
-    with (TMP_FOLDER / "modrinth.index.json").open('w') as file:
-        _dump(modrinth_index, file, indent=4)
-
-    createArchive([TMP_FOLDER / "modrinth.index.json", override_folder], output_file)
+    deleteEmptyFolders(TMP_FOLDER)
+    outputFolder = outputFolder or DEFAULT_OUTPUT_FOLDER
+    outputFolder.mkdir(parents=True, exist_ok=True)
+    mrpackFile = outputFolder / 'output.mrpack'
+    createMrpack(TMP_FOLDER, mrpackFile)
     rmtree(TMP_FOLDER)
-    print(BOLD_GREEN.format("Modpack archive created successfully!"))
+
+def downloadAndVerify(fileInfo: Dict, minecraftFolder: Path, skipHash: bool):
+    """Downloads and verifies a file based on the information provided.
+    
+    Args:
+        fileInfo (Dict): A dictionary containing file information.
+        minecraftFolder (Path): The path to the .minecraft folder.
+        skipHash (bool): Whether to skip hash verification.
+    """
+    filePath = minecraftFolder / fileInfo['path']
+    filePath.parent.mkdir(parents=True, exist_ok=True)
+
+    for downloadUrl in fileInfo['downloads']:
+        if downloadFile(downloadUrl, filePath, fileInfo['hashes']['sha1'], skipHash):
+            print(GREEN.format(f"File {filePath.name} downloaded and verified successfully."))
+            break
+        else:
+            print(RED.format(f"Hash mismatch for {filePath.name}. Trying the next download URL."))
+            filePath.unlink()
+
+
+def downloadFile(url: str, filePath: Path, expectedHash: str, skipHash: bool = False) -> bool:
+    """Downloads a file from a URL and verifies its hash.
+
+    Args:
+        url (str): The download URL.
+        filePath (Path): The path to save the file.
+        expectedHash (str): The expected SHA-1 hash of the file.
+        skipHash (bool): Whether to skip hash verification.
+
+    Returns:
+        bool: True if the file was downloaded and verified successfully, False otherwise.
+    """
+    try:
+        response = _get(url, stream=True, headers=getUA())
+        response.raise_for_status()
+
+        with filePath.open('wb') as file:
+            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                file.write(chunk)
+
+        if skipHash:
+            print(GREEN.format(f"Downloaded {filePath.name} without hash verification"))
+            return True
+
+        fileHash = sha1(filePath.read_bytes()).hexdigest()
+        if fileHash == expectedHash:
+            print(GREEN.format(f"Downloaded and verified {filePath.name} successfully"))
+            return True
+        else:
+            print(RED.format(f"Hash mismatch for {filePath.name}: expected {expectedHash}, got {fileHash}"))
+            return False
+    except requestsExceptions.RequestException as e:
+        print(RED.format(f"Error downloading {filePath.name}: {e}"))
+        return False
+
+
+def getArchive(fp: Path, outputPath: Optional[Path] = None, skipHash: bool = False):
+    """Extracts and downloads the contents of a modpack archive (.mrpack).
+
+    Args:
+        fp (Path): The path to the modpack archive.
+        outputPath (Optional[Path]): The output path for the extracted files.
+        skipHash (bool): Whether to skip hash verification.
+    """
+    with ZipFile(fp, 'r') as archive:
+        with archive.open('modrinth.index.json') as indexFile:
+            indexData = load(indexFile)
+
+    TMP_FOLDER.mkdir(exist_ok=True)
+    resultsFolder = outputPath or DEFAULT_OUTPUT_FOLDER
+    minecraftFolder = resultsFolder / '.minecraft'
+    minecraftFolder.mkdir(parents=True, exist_ok=True)
+
+    print(GREEN.format(f"Created Minecraft folder at: {minecraftFolder}"))
+
+    with ZipFile(fp, 'r') as archive:
+        for item in archive.infolist():
+            # Check if '/' exists in the filename before splitting
+            if '/' in item.filename:
+                targetPath = minecraftFolder / item.filename.split('/', 1)[1]
+                if item.is_dir():
+                    targetPath.mkdir(parents=True, exist_ok=True)
+                else:
+                    targetPath.parent.mkdir(parents=True, exist_ok=True)
+                    with targetPath.open('wb') as targetFile, archive.open(item.filename) as sourceFile:
+                        targetFile.write(sourceFile.read())
+
+    print(GREEN.format(f"Extracted files to: {minecraftFolder}"))
+
+    with ThreadPoolExecutor() as executor:
+        executor.map(lambda fileInfo: downloadAndVerify(fileInfo, minecraftFolder, skipHash), indexData['files'])
+
+    if (TMP_FOLDER / '.minecraft').exists():
+        move(str(TMP_FOLDER / '.minecraft'), str(resultsFolder))
+        print(GREEN.format(f"Moved .minecraft to {resultsFolder}"))
+    else:
+        print(RED.format(f"Directory {TMP_FOLDER / '.minecraft'} does not exist. Skipping move operation."))
+
+    rmtree(TMP_FOLDER, ignore_errors=True)
+
 
 def main():
-    """Main function to handle command-line arguments and execute the appropriate mode."""
-    parser = argparse.ArgumentParser(description="Manage .mrpack archives.")
-    parser.add_argument('-m', '--mode', required=True, choices=['create', 'get'], help="Mode (create or get).")
-    parser.add_argument('-i', '--input', nargs='+', type=Path, help="Input .minecraft folder for 'create' mode, or .mrpack archive for 'get' mode.")
-    parser.add_argument('-o', '--output', type=Path, help="Output .mrpack archive for 'create' mode, or output directory for 'get' mode.")
-    parser.add_argument('-v', '--version-id', type=str, default=DEFAULT_VERSION_ID, help="Version ID for the modpack (create mode).")
-    parser.add_argument('-n', '--name', type=str, default=DEFAULT_NAME, help="Name of the modpack (create mode).")
-    parser.add_argument('-s', '--summary', type=str, default=DEFAULT_SUMMARY, help="Summary description of the modpack (create mode).")
-    parser.add_argument('-mc', '--minecraft-version', type=str, help="Minecraft version for the modpack (create mode).")
-    parser.add_argument('-fo', '--force-override', action='store_true', help="Force override without prompting the user (create mode).")
-    parser.add_argument('-sh', '--skip-hash', action='store_true', help="Skip hash verification (get mode).")
+    parser = argparse.ArgumentParser(description="Create or extract Minecraft modpack archives.")
+    parser.add_argument('-i', '--input', required=True, help="Input file path")
+    parser.add_argument('-g', '--get', action='store_true', help="Extract modpack archive")
+    parser.add_argument('-c', '--create', action='store_true', help="Create modpack archive")
+    parser.add_argument('-o', '--output', help="Output file path")
+    parser.add_argument('-fo', '--force-override', action='store_true', help="Force override files without prompting")
+    parser.add_argument('-sh', '--skip-hash', action='store_true', help="Skip hash verification")
 
     args = parser.parse_args()
 
-    if args.mode == 'create':
-        if not args.output:
-            args.output = DEFAULT_OUTPUT_FOLDER / "output.mrpack"
-        args.output.parent.mkdir(parents=True, exist_ok=True)
+    inputPath = Path(args.input)
+    outputPath = Path(args.output) if args.output else None
 
-        fabric_loader_version = getLatestLoader()
-        if not fabric_loader_version:
-            print(BOLD_RED.format("Error: Failed to fetch the latest Fabric Loader version."))
-            return
-
-        createModpackArchive(args.input[0], args.output, args.version_id, args.name, args.summary, args.minecraft_version, fabric_loader_version, args.force_override)
-    elif args.mode == 'get':
-        if not args.output:
-            args.output = DEFAULT_OUTPUT_FOLDER
-        getArchive(args.input[0], args.output, args.skip_hash)
-        print(BOLD_GREEN.format("Modpack retrieved successfully!"))
+    if args.get:
+        getArchive(inputPath, outputPath, args.skip_hash)
+    elif args.create:
+        createArchive(
+            folder=inputPath,
+            forced=args.force_override,
+            outputFolder=outputPath
+        )
+    else:
+        parser.print_help()
 
 if __name__ == "__main__":
+    cls()
     main()
-
-# https://github.com/dstvx/mrePy.git
