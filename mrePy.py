@@ -1,6 +1,5 @@
-import argparse
-import os
-import sys
+from argparse import ArgumentParser
+from os import system, name as osName
 from colorama import Fore as F, init
 from pathlib import Path
 from typing import Dict, List, Union, Optional
@@ -43,7 +42,7 @@ def getUA():
 
 def cls():
     """Clears the console screen."""
-    os.system('cls' if os.name == 'nt' else 'clear')
+    system('cls' if osName == 'nt' else 'clear')
 
 
 def getLatestLoader() -> Optional[str]:
@@ -412,7 +411,7 @@ def getArchive(fp: Path, outputPath: Optional[Path] = None, skipHash: bool = Fal
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Create or extract Minecraft modpack archives.")
+    parser = ArgumentParser(description="Create or extract Minecraft modpack archives.")
     parser.add_argument('-i', '--input', required=True, help="Input file path")
     parser.add_argument('-g', '--get', action='store_true', help="Extract modpack archive")
     parser.add_argument('-c', '--create', action='store_true', help="Create modpack archive")
