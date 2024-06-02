@@ -290,7 +290,7 @@ def createArchive(folder: Path, forced: Optional[bool] = None, outputFolder: Opt
         "files": [],
         "dependencies": {
             "minecraft": minecraftVersion or None,
-            "fabric-loader": fabricLoaderVersion or None
+            "fabric-loader": fabricLoaderVersion or getLatestLoader()
         }
     }
 
